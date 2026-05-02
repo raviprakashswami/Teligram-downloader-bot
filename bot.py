@@ -157,7 +157,7 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # Cookies file for YouTube authentication
-        cookies_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+        cookies_file = '/opt/render/project/src/cookies.txt'
         cookies_opt = {'cookiefile': cookies_file} if os.path.exists(cookies_file) else {}
 
         if fmt == 'mp3':
