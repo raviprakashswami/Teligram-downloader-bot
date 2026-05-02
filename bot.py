@@ -156,6 +156,10 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
+        # Cookies file for YouTube authentication
+        cookies_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+        cookies_opt = {'cookiefile': cookies_file} if os.path.exists(cookies_file) else {}
+
         if fmt == 'mp3':
             ydl_opts = {
                 'format': 'bestaudio/best',
@@ -167,6 +171,7 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
                 }],
                 'quiet': True,
                 'no_warnings': True,
+                **cookies_opt,
             }
         else:
             quality_map = {
@@ -183,6 +188,7 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
                 'merge_output_format': 'mp4',
                 'quiet': True,
                 'no_warnings': True,
+                **cookies_opt,
             }
 
         loop = asyncio.get_event_loop()
