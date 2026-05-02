@@ -156,9 +156,16 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
-        # Cookies file for YouTube authentication
-        cookies_file = '/opt/render/project/src/cookies.txt'
-        cookies_opt = {'cookiefile': cookies_file} if os.path.exists(cookies_file) else {}
+        # Cookies - from environment variable or file
+        cookies_opt = {}
+        cookies_content = os.environ.get('YOUTUBE_COOKIES', '')
+        if cookies_content:
+            cookies_temp = '/tmp/yt_cookies.txt'
+            with open(cookies_temp, 'w') as cf:
+                cf.write(cookies_content)
+            cookies_opt = {'cookiefile': cookies_temp}
+        elif os.path.exists('/opt/render/project/src/cookies.txt'):
+            cookies_opt = {'cookiefile': '/opt/render/project/src/cookies.txt'}
 
         if fmt == 'mp3':
             ydl_opts = {
