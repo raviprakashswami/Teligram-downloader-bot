@@ -156,29 +156,36 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
-        # Cookies - from environment variable or file
-        cookies_opt = {}
-        cookies_content = os.environ.get('YOUTUBE_COOKIES', '')
-        if cookies_content:
-            cookies_temp = '/tmp/yt_cookies.txt'
-            with open(cookies_temp, 'w') as cf:
-                cf.write(cookies_content)
-            cookies_opt = {'cookiefile': cookies_temp}
-        elif os.path.exists('/opt/render/project/src/cookies.txt'):
-            cookies_opt = {'cookiefile': '/opt/render/project/src/cookies.txt'}
+        platform = context.user_data.get('platform', '')
+
+        # Base yt-dlp options
+        base_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
+        }
+
+        # YouTube specific - use android client to bypass bot check
+        if platform == 'youtube':
+            base_opts['extractor_args'] = {
+                'youtube': {
+                    'player_client': ['android'],
+                    'player_skip': ['webpage', 'configs'],
+                }
+            }
+            base_opts['http_headers'] = {
+                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip',
+            }
 
         if fmt == 'mp3':
             ydl_opts = {
+                **base_opts,
                 'format': 'bestaudio/best',
-                'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
                 'postprocessors': [{
                     'key': 'FFmpegExtractAudio',
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'quiet': True,
-                'no_warnings': True,
-                **cookies_opt,
             }
         else:
             quality_map = {
@@ -190,12 +197,9 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
                 'medium': 'bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]',
             }
             ydl_opts = {
+                **base_opts,
                 'format': quality_map.get(quality, 'best'),
-                'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
                 'merge_output_format': 'mp4',
-                'quiet': True,
-                'no_warnings': True,
-                **cookies_opt,
             }
 
         loop = asyncio.get_event_loop()
