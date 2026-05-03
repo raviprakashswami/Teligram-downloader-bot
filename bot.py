@@ -144,107 +144,82 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ *Downloading... please wait!*", parse_mode='Markdown')
         await download_and_send(query, context)
 
-async def download_youtube_rapidapi(url, fmt, quality, chat_id, context):
-    """YouTube download using RapidAPI YouTube Media Downloader"""
-    RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
-    if not RAPIDAPI_KEY:
-        raise Exception("RAPIDAPI_KEY not set")
+# Cobalt API instances - multiple fallbacks
+COBALT_INSTANCES = [
+    "https://cobalt.api.bludger.de",
+    "https://cobalt.serenov.dev",
+    "https://api.cobalt.tools",
+]
 
-    # Extract video ID
-    video_id = None
-    if 'youtu.be/' in url:
-        video_id = url.split('youtu.be/')[1].split('?')[0]
-    elif 'v=' in url:
-        video_id = url.split('v=')[1].split('&')[0]
-
-    if not video_id:
-        raise Exception("YouTube video ID nahi mila")
-
-    headers = {
-        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
-        "x-rapidapi-key": RAPIDAPI_KEY,
+async def download_youtube_cobalt(url, fmt, quality, chat_id, context):
+    """YouTube download using Cobalt API - free, no key needed"""
+    
+    quality_map = {'1080': '1080', '720': '720', '480': '480', '360': '360', 'best': '1080', 'medium': '480', 'mp3_best': '320'}
+    
+    payload = {
+        "url": url,
+        "videoQuality": quality_map.get(quality, '720'),
+        "audioFormat": "mp3" if fmt == 'mp3' else "best",
+        "filenameStyle": "basic",
     }
-
-    # Get video info
-    info_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
-    params = {"videoId": video_id}
-    resp = requests.get(info_url, headers=headers, params=params, timeout=30)
-    data = resp.json()
-
-    if not data.get('status'):
-        raise Exception(f"API Error: {data.get('message', 'Unknown error')}")
-
-    title = data.get('title', 'video')[:50]
-
     if fmt == 'mp3':
-        # Get audio streams
-        audios = data.get('audios', [])
-        if not audios:
-            raise Exception("Audio stream nahi mila")
-        audio_url = audios[0].get('url')
-        ext = 'mp3'
-    else:
-        # Get video streams
-        quality_map = {'1080': 1080, '720': 720, '480': 480, '360': 360, 'best': 9999, 'medium': 480}
-        target_height = quality_map.get(quality, 720)
-
-        videos = data.get('videos', {}).get('items', [])
-        if not videos:
-            raise Exception("Video stream nahi mila")
-
-        # Find best matching quality
-        best = None
-        for v in videos:
-            h = v.get('height', 0)
-            if h <= target_height:
-                if best is None or h > best.get('height', 0):
-                    best = v
-
-        if not best:
-            best = videos[-1]
-
-        audio_url = None
-        audios = data.get('audios', [])
-        if audios:
-            audio_url = audios[0].get('url')
-
-        video_dl_url = best.get('url')
-        ext = 'mp4'
-        title_safe = re.sub(r'[^\w\s-]', '', title).strip()[:40]
-        video_path = f"{DOWNLOAD_DIR}/{title_safe}.mp4"
-
-        await context.bot.send_message(chat_id=chat_id, text=f"📤 Uploading: {title}...")
-
-        # Download video
-        v_resp = requests.get(video_dl_url, stream=True, timeout=60)
-        with open(video_path, 'wb') as vf:
-            for chunk in v_resp.iter_content(chunk_size=8192):
-                vf.write(chunk)
-
-        file_size = os.path.getsize(video_path)
-        if file_size > 50 * 1024 * 1024:
-            os.remove(video_path)
-            await context.bot.send_message(chat_id=chat_id, text="❌ File 50MB se badi hai! Chhoti quality try karo.")
-            return
-
-        with open(video_path, 'rb') as vf:
-            await context.bot.send_video(chat_id=chat_id, video=vf, supports_streaming=True)
-        os.remove(video_path)
+        payload["downloadMode"] = "audio"
+    
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    
+    download_url = None
+    last_error = None
+    
+    for instance in COBALT_INSTANCES:
+        try:
+            resp = requests.post(instance, json=payload, headers=headers, timeout=20)
+            data = resp.json()
+            logger.info(f"Cobalt response from {instance}: {data}")
+            
+            status = data.get('status', '')
+            if status in ('tunnel', 'redirect', 'stream'):
+                download_url = data.get('url')
+                break
+            elif status == 'picker':
+                items = data.get('picker', [])
+                if items:
+                    download_url = items[0].get('url')
+                    break
+            else:
+                last_error = data.get('error', {}).get('code', str(data))
+        except Exception as e:
+            last_error = str(e)
+            continue
+    
+    if not download_url:
+        raise Exception(f"Cobalt API se download link nahi mila: {last_error}")
+    
+    ext = 'mp3' if fmt == 'mp3' else 'mp4'
+    file_path = f"{DOWNLOAD_DIR}/youtube_video.{ext}"
+    
+    dl_resp = requests.get(download_url, stream=True, timeout=120)
+    with open(file_path, 'wb') as f:
+        for chunk in dl_resp.iter_content(chunk_size=65536):
+            f.write(chunk)
+    
+    file_size = os.path.getsize(file_path)
+    if file_size > 50 * 1024 * 1024:
+        os.remove(file_path)
+        await context.bot.send_message(chat_id=chat_id, text="❌ File 50MB se badi hai! Chhoti quality try karo.")
         return
-
-    # Download audio (MP3)
-    title_safe = re.sub(r'[^\w\s-]', '', title).strip()[:40]
-    audio_path = f"{DOWNLOAD_DIR}/{title_safe}.mp3"
-    a_resp = requests.get(audio_url, stream=True, timeout=60)
-    with open(audio_path, 'wb') as af:
-        for chunk in a_resp.iter_content(chunk_size=8192):
-            af.write(chunk)
-
-    await context.bot.send_message(chat_id=chat_id, text=f"📤 Uploading: {title}...")
-
-    with open(audio_path, 'rb') as af:
-        await context.bot.send_audio(chat_id=chat_id, audio=af, title=title)
-    os.remove(audio_path)
+    
+    await context.bot.send_message(chat_id=chat_id, text="📤 Uploading...")
+    
+    with open(file_path, 'rb') as f:
+        if fmt == 'mp3':
+            await context.bot.send_audio(chat_id=chat_id, audio=f, title="YouTube Audio")
+        else:
+            await context.bot.send_video(chat_id=chat_id, video=f, supports_streaming=True)
+    
+    os.remove(file_path)
 
 
 async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
@@ -264,7 +239,7 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
     try:
         # YouTube - use RapidAPI
         if platform == 'youtube':
-            await download_youtube_rapidapi(url, fmt, quality, chat_id, context)
+            await download_youtube_cobalt(url, fmt, quality, chat_id, context)
             return
 
         # Other platforms - use yt-dlp
