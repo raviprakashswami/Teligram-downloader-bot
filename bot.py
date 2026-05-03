@@ -8,6 +8,8 @@ from telegram.ext import (
     CallbackQueryHandler, ContextTypes, filters
 )
 import yt_dlp
+import requests
+import time
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -142,11 +144,115 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⏳ *Downloading... please wait!*", parse_mode='Markdown')
         await download_and_send(query, context)
 
+async def download_youtube_rapidapi(url, fmt, quality, chat_id, context):
+    """YouTube download using RapidAPI YouTube Media Downloader"""
+    RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "")
+    if not RAPIDAPI_KEY:
+        raise Exception("RAPIDAPI_KEY not set")
+
+    # Extract video ID
+    video_id = None
+    if 'youtu.be/' in url:
+        video_id = url.split('youtu.be/')[1].split('?')[0]
+    elif 'v=' in url:
+        video_id = url.split('v=')[1].split('&')[0]
+
+    if not video_id:
+        raise Exception("YouTube video ID nahi mila")
+
+    headers = {
+        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com",
+        "x-rapidapi-key": RAPIDAPI_KEY,
+    }
+
+    # Get video info
+    info_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
+    params = {"videoId": video_id}
+    resp = requests.get(info_url, headers=headers, params=params, timeout=30)
+    data = resp.json()
+
+    if not data.get('status'):
+        raise Exception(f"API Error: {data.get('message', 'Unknown error')}")
+
+    title = data.get('title', 'video')[:50]
+
+    if fmt == 'mp3':
+        # Get audio streams
+        audios = data.get('audios', [])
+        if not audios:
+            raise Exception("Audio stream nahi mila")
+        audio_url = audios[0].get('url')
+        ext = 'mp3'
+    else:
+        # Get video streams
+        quality_map = {'1080': 1080, '720': 720, '480': 480, '360': 360, 'best': 9999, 'medium': 480}
+        target_height = quality_map.get(quality, 720)
+
+        videos = data.get('videos', {}).get('items', [])
+        if not videos:
+            raise Exception("Video stream nahi mila")
+
+        # Find best matching quality
+        best = None
+        for v in videos:
+            h = v.get('height', 0)
+            if h <= target_height:
+                if best is None or h > best.get('height', 0):
+                    best = v
+
+        if not best:
+            best = videos[-1]
+
+        audio_url = None
+        audios = data.get('audios', [])
+        if audios:
+            audio_url = audios[0].get('url')
+
+        video_dl_url = best.get('url')
+        ext = 'mp4'
+        title_safe = re.sub(r'[^\w\s-]', '', title).strip()[:40]
+        video_path = f"{DOWNLOAD_DIR}/{title_safe}.mp4"
+
+        await context.bot.send_message(chat_id=chat_id, text=f"📤 Uploading: {title}...")
+
+        # Download video
+        v_resp = requests.get(video_dl_url, stream=True, timeout=60)
+        with open(video_path, 'wb') as vf:
+            for chunk in v_resp.iter_content(chunk_size=8192):
+                vf.write(chunk)
+
+        file_size = os.path.getsize(video_path)
+        if file_size > 50 * 1024 * 1024:
+            os.remove(video_path)
+            await context.bot.send_message(chat_id=chat_id, text="❌ File 50MB se badi hai! Chhoti quality try karo.")
+            return
+
+        with open(video_path, 'rb') as vf:
+            await context.bot.send_video(chat_id=chat_id, video=vf, supports_streaming=True)
+        os.remove(video_path)
+        return
+
+    # Download audio (MP3)
+    title_safe = re.sub(r'[^\w\s-]', '', title).strip()[:40]
+    audio_path = f"{DOWNLOAD_DIR}/{title_safe}.mp3"
+    a_resp = requests.get(audio_url, stream=True, timeout=60)
+    with open(audio_path, 'wb') as af:
+        for chunk in a_resp.iter_content(chunk_size=8192):
+            af.write(chunk)
+
+    await context.bot.send_message(chat_id=chat_id, text=f"📤 Uploading: {title}...")
+
+    with open(audio_path, 'rb') as af:
+        await context.bot.send_audio(chat_id=chat_id, audio=af, title=title)
+    os.remove(audio_path)
+
+
 async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
     url = context.user_data.get('url')
     fmt = context.user_data.get('format')
     quality = context.user_data.get('quality')
     chat_id = query.message.chat_id
+    platform = context.user_data.get('platform', '')
 
     # Clean old files
     for f in os.listdir(DOWNLOAD_DIR):
@@ -156,26 +262,17 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
             pass
 
     try:
-        platform = context.user_data.get('platform', '')
+        # YouTube - use RapidAPI
+        if platform == 'youtube':
+            await download_youtube_rapidapi(url, fmt, quality, chat_id, context)
+            return
 
-        # Base yt-dlp options
+        # Other platforms - use yt-dlp
         base_opts = {
             'quiet': True,
             'no_warnings': True,
             'outtmpl': f'{DOWNLOAD_DIR}/%(title)s.%(ext)s',
         }
-
-        # YouTube specific - use android client to bypass bot check
-        if platform == 'youtube':
-            base_opts['extractor_args'] = {
-                'youtube': {
-                    'player_client': ['android'],
-                    'player_skip': ['webpage', 'configs'],
-                }
-            }
-            base_opts['http_headers'] = {
-                'User-Agent': 'com.google.android.youtube/17.36.4 (Linux; U; Android 12; GB) gzip',
-            }
 
         if fmt == 'mp3':
             ydl_opts = {
@@ -224,10 +321,7 @@ async def download_and_send(query, context: ContextTypes.DEFAULT_TYPE):
         file_size = os.path.getsize(downloaded_file)
         if file_size > 50 * 1024 * 1024:
             os.remove(downloaded_file)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="❌ File 50MB se badi hai.\nChhoti quality try karo!"
-            )
+            await context.bot.send_message(chat_id=chat_id, text="❌ File 50MB se badi hai!\nChhoti quality try karo!")
             return
 
         await context.bot.send_message(chat_id=chat_id, text=f"📤 Uploading: {title}...")
